@@ -1,0 +1,780 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Présences des employés</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/tabler-icons/2.47.0/iconfont/tabler-icons.min.css" />
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, -apple-system, sans-serif; }
+  input, select, button {
+    font-family: inherit; font-size: 14px; border: 0.5px solid #D3D1C7;
+    border-radius: 8px; padding: 0 10px; height: 36px; background: #fff; color: #2C2C2A;
+  }
+  button { cursor: pointer; background: #fff; }
+  button:hover { background: #F1EFE8; }
+  input:focus, select:focus { outline: none; border-color: #993C1D; }
+  input[type="number"] { padding-right: 6px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react,env">
+const { useState, useEffect, useMemo, useCallback } = React;
+
+const DEFAULT_EMPLOYEES = [
+  "AFSATH", "AMAVI ADONH", "ARNAULD SOGAN", "BORIS TEBLEKOU", "CHARLES CUISINE",
+  "CHRISTIAN", "CHRISTINE", "CHRISTOPHE BUA", "CHRISTOPHE ENT", "CLARISSE",
+  "CLEMENT", "CYNTHIA", "DAVID TECH", "DEBORAH", "DELPHIN",
+  "DELPHINE KOUANA", "DENISE", "ELENA", "ELISEE", "ELVISSE ADJOVI",
+  "EVA SCHMUTZ", "FLORIELLE", "GEOFFROY", "GLADYS", "GUILLAUME",
+  "INGRID HOUNTONDJI", "ISSIAKA", "JOSEPH", "JOSEPHINE", "JOSUE",
+  "JOSUE TECH", "KARIM", "KEVIN", "KOSSI", "KOSSIVI DOUKPO",
+  "LAURENCE", "LAURIANE", "LUCRECE", "MAÏWEN", "MARCEL",
+  "NABILATOU", "NADEGE", "OLIVIER", "PAMELA", "PAULINE",
+  "PETRONILLE", "PIERRETTE", "PIERRETTE AKOTO", "PROSPER", "PRUDENCE QUENUM",
+  "REMI", "RICHELLE", "SITOU", "SKARLENE DA MATHA", "SOLANGE",
+  "TATIANA", "TOUSSAINT", "YAHLOM", "YAYA",
+].map((name, i) => ({ id: "e" + (i + 1), name, active: true, salaire: null, heuresMensuelles: null }));
+
+const STATUSES = [
+  { key: "PRESENT", label: "Présent", short: "P", color: "green" },
+  { key: "CONGE", label: "Congé", short: "C", color: "blue" },
+  { key: "MALADIE", label: "Maladie", short: "M", color: "amber" },
+  { key: "MATERNITE", label: "Maternité", short: "MT", color: "pink" },
+  { key: "REPOS", label: "Repos", short: "R", color: "gray" },
+  { key: "PERMISSION", label: "Permission", short: "PM", color: "purple" },
+  { key: "ABSENCE", label: "Absence", short: "AB", color: "red" },
+];
+
+const STATUS_MAP = Object.fromEntries(STATUSES.map((s) => [s.key, s]));
+
+const COLOR_HEX = {
+  green: { bg: "#EAF3DE", text: "#27500A", border: "#639922" },
+  blue: { bg: "#E6F1FB", text: "#0C447C", border: "#378ADD" },
+  amber: { bg: "#FAEEDA", text: "#633806", border: "#BA7517" },
+  pink: { bg: "#FBEAF0", text: "#72243E", border: "#D4537E" },
+  gray: { bg: "#F1EFE8", text: "#444441", border: "#888780" },
+  purple: { bg: "#EEEDFE", text: "#3C3489", border: "#7F77DD" },
+  red: { bg: "#FCEBEB", text: "#791F1F", border: "#E24B4A" },
+};
+
+function pad2(n) { return String(n).padStart(2, "0"); }
+function toISODate(d) { return d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate()); }
+function monthKeyOf(iso) { return iso.slice(0, 7); }
+function formatDateLabel(iso) {
+  const d = new Date(iso + "T00:00:00");
+  return d.toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+}
+function monthLabel(mk) {
+  const d = new Date(mk + "-01T00:00:00");
+  return d.toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
+}
+function daysInMonth(mk) {
+  const [y, m] = mk.split("-").map(Number);
+  return new Date(y, m, 0).getDate();
+}
+function timeStrToHours(t) {
+  if (!t) return 0;
+  const parts = t.split(":").map(Number);
+  const h = parts[0] || 0;
+  const m = parts[1] || 0;
+  if (Number.isNaN(h) || Number.isNaN(m)) return 0;
+  return h + m / 60;
+}
+function formatCurrency(v, devise) {
+  if (v === null || v === undefined || Number.isNaN(v)) return "—";
+  return Math.round(v).toLocaleString("fr-FR") + " " + (devise || "FCFA");
+}
+function hourlyRateOf(emp, settings) {
+  const monthlyHours = emp.heuresMensuelles || settings.heuresMensuelles;
+  if (!emp.salaire || !monthlyHours) return null;
+  return emp.salaire / monthlyHours;
+}
+
+const DEFAULT_SETTINGS = {
+  heuresJournalieres: 8,
+  heuresMensuelles: 173.33,
+  majorationSupp: 1.5,
+  devise: "FCFA",
+};
+
+const STORAGE_PREFIX = "presences-app:";
+async function storageGet(key) {
+  try {
+    const raw = window.localStorage.getItem(STORAGE_PREFIX + key);
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) {
+    return null;
+  }
+}
+async function storageSet(key, value) {
+  try {
+    window.localStorage.setItem(STORAGE_PREFIX + key, JSON.stringify(value));
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+function App() {
+  const [tab, setTab] = useState("saisie");
+  const [employees, setEmployees] = useState(DEFAULT_EMPLOYEES);
+  const [loading, setLoading] = useState(true);
+  const [saveError, setSaveError] = useState(false);
+  const [selectedDate, setSelectedDate] = useState(toISODate(new Date()));
+  const [monthCache, setMonthCache] = useState({});
+  const [filter, setFilter] = useState("");
+  const [newEmployeeName, setNewEmployeeName] = useState("");
+  const [settings, setSettings] = useState(DEFAULT_SETTINGS);
+
+  useEffect(() => {
+    (async () => {
+      const storedEmployees = await storageGet("employees");
+      if (storedEmployees && Array.isArray(storedEmployees) && storedEmployees.length) {
+        setEmployees(storedEmployees);
+      } else {
+        await storageSet("employees", DEFAULT_EMPLOYEES);
+      }
+      const storedSettings = await storageGet("settings");
+      if (storedSettings) {
+        setSettings({ ...DEFAULT_SETTINGS, ...storedSettings });
+      } else {
+        await storageSet("settings", DEFAULT_SETTINGS);
+      }
+      setLoading(false);
+    })();
+  }, []);
+
+  const persistSettings = async (patch) => {
+    const next = { ...settings, ...patch };
+    setSettings(next);
+    await storageSet("settings", next);
+  };
+
+  const currentMonthKey = monthKeyOf(selectedDate);
+
+  const loadMonth = useCallback(async (mk) => {
+    if (monthCache[mk]) return monthCache[mk];
+    const data = (await storageGet("attendance-" + mk)) || {};
+    setMonthCache((prev) => ({ ...prev, [mk]: data }));
+    return data;
+  }, [monthCache]);
+
+  useEffect(() => {
+    loadMonth(currentMonthKey);
+  }, [currentMonthKey]);
+
+  const persistMonth = async (mk, data) => {
+    setMonthCache((prev) => ({ ...prev, [mk]: data }));
+    const ok = await storageSet("attendance-" + mk, data);
+    setSaveError(!ok);
+  };
+
+  const persistEmployees = async (list) => {
+    setEmployees(list);
+    await storageSet("employees", list);
+  };
+
+  const setEntry = async (date, employeeId, patch) => {
+    const mk = monthKeyOf(date);
+    const current = monthCache[mk] || (await loadMonth(mk));
+    const dayData = { ...(current[date] || {}) };
+    const existing = dayData[employeeId] || {};
+    if (patch === null) {
+      delete dayData[employeeId];
+    } else {
+      dayData[employeeId] = { ...existing, ...patch };
+    }
+    const next = { ...current, [date]: dayData };
+    await persistMonth(mk, next);
+  };
+
+  const dayData = monthCache[currentMonthKey]?.[selectedDate] || {};
+
+  const filteredEmployees = useMemo(() => {
+    const active = employees.filter((e) => e.active !== false);
+    if (!filter.trim()) return active;
+    const f = filter.trim().toLowerCase();
+    return active.filter((e) => e.name.toLowerCase().includes(f));
+  }, [employees, filter]);
+
+  const dayStats = useMemo(() => {
+    const counts = Object.fromEntries(STATUSES.map((s) => [s.key, 0]));
+    let notMarked = 0;
+    const activeIds = employees.filter((e) => e.active !== false).map((e) => e.id);
+    activeIds.forEach((id) => {
+      const entry = dayData[id];
+      if (entry && entry.status) counts[entry.status] = (counts[entry.status] || 0) + 1;
+      else notMarked++;
+    });
+    return { counts, notMarked, total: activeIds.length };
+  }, [dayData, employees]);
+
+  if (loading) {
+    return (
+      <div style={{ padding: "3rem", textAlign: "center", color: "#888780", fontFamily: "system-ui, sans-serif" }}>
+        Chargement…
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ fontFamily: "system-ui, -apple-system, sans-serif", maxWidth: 1100, margin: "0 auto", padding: "1.5rem", color: "#2C2C2A", background: "#FBF9F4", minHeight: "100vh" }}>
+      <Header saveError={saveError} />
+      <Tabs tab={tab} setTab={setTab} />
+      {tab === "saisie" && (
+        <SaisieTab
+          selectedDate={selectedDate}
+          setSelectedDate={setSelectedDate}
+          employees={filteredEmployees}
+          allCount={employees.filter((e) => e.active !== false).length}
+          filter={filter}
+          setFilter={setFilter}
+          dayData={dayData}
+          dayStats={dayStats}
+          onSetEntry={setEntry}
+        />
+      )}
+      {tab === "dashboard" && (
+        <DashboardTab
+          employees={employees.filter((e) => e.active !== false)}
+          monthCache={monthCache}
+          loadMonth={loadMonth}
+          currentMonthKey={currentMonthKey}
+          settings={settings}
+        />
+      )}
+      {tab === "employes" && (
+        <EmployesTab
+          employees={employees}
+          persistEmployees={persistEmployees}
+          newEmployeeName={newEmployeeName}
+          setNewEmployeeName={setNewEmployeeName}
+          settings={settings}
+        />
+      )}
+      {tab === "parametres" && (
+        <ParametresTab settings={settings} persistSettings={persistSettings} />
+      )}
+    </div>
+  );
+}
+
+function Header({ saveError }) {
+  return (
+    <div style={{ marginBottom: "1.25rem" }}>
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+        <div>
+          <h1 style={{ fontSize: 22, fontWeight: 500, margin: 0 }}>Présences des employés</h1>
+          <p style={{ fontSize: 13, color: "#5F5E5A", margin: "4px 0 0" }}>Saisie quotidienne et suivi mensuel</p>
+        </div>
+        {saveError && (
+          <span style={{ fontSize: 12, color: "#791F1F", background: "#FCEBEB", padding: "4px 10px", borderRadius: 8 }}>
+            Échec de l'enregistrement, réessayez
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Tabs({ tab, setTab }) {
+  const items = [
+    { key: "saisie", label: "Saisie du jour" },
+    { key: "dashboard", label: "Tableau de bord" },
+    { key: "employes", label: "Employés" },
+    { key: "parametres", label: "Paramètres" },
+  ];
+  return (
+    <div style={{ display: "flex", gap: 4, borderBottom: "0.5px solid #D3D1C7", marginBottom: "1.25rem" }}>
+      {items.map((it) => (
+        <button
+          key={it.key}
+          onClick={() => setTab(it.key)}
+          style={{
+            padding: "8px 14px",
+            fontSize: 14,
+            fontWeight: 500,
+            background: "transparent",
+            border: "none",
+            borderBottom: tab === it.key ? "2px solid #993C1D" : "2px solid transparent",
+            color: tab === it.key ? "#993C1D" : "#5F5E5A",
+            cursor: "pointer",
+            marginBottom: -1,
+          }}
+        >
+          {it.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function StatusBadge({ statusKey, small }) {
+  const s = STATUS_MAP[statusKey];
+  if (!s) return null;
+  const c = COLOR_HEX[s.color];
+  return (
+    <span style={{
+      display: "inline-block", fontSize: small ? 11 : 12, fontWeight: 500,
+      padding: small ? "2px 6px" : "3px 8px", borderRadius: 6,
+      background: c.bg, color: c.text,
+    }}>
+      {s.label}
+    </span>
+  );
+}
+
+function SaisieTab({ selectedDate, setSelectedDate, employees, allCount, filter, setFilter, dayData, dayStats, onSetEntry }) {
+  const shiftDate = (delta) => {
+    const d = new Date(selectedDate + "T00:00:00");
+    d.setDate(d.getDate() + delta);
+    setSelectedDate(toISODate(d));
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
+        <button onClick={() => shiftDate(-1)} aria-label="Jour précédent" style={{ width: 32, height: 32, borderRadius: 8 }}>
+          <i className="ti ti-chevron-left" aria-hidden="true"></i>
+        </button>
+        <input
+          type="date"
+          value={selectedDate}
+          onChange={(e) => setSelectedDate(e.target.value)}
+          style={{ width: 170 }}
+        />
+        <button onClick={() => shiftDate(1)} aria-label="Jour suivant" style={{ width: 32, height: 32, borderRadius: 8 }}>
+          <i className="ti ti-chevron-right" aria-hidden="true"></i>
+        </button>
+        <button onClick={() => setSelectedDate(toISODate(new Date()))} style={{ fontSize: 13 }}>
+          Aujourd'hui
+        </button>
+        <span style={{ fontSize: 14, color: "#5F5E5A", textTransform: "capitalize" }}>{formatDateLabel(selectedDate)}</span>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 10, marginBottom: 16 }}>
+        <MetricCard label="Marqués" value={`${allCount - dayStats.notMarked} / ${allCount}`} />
+        {STATUSES.map((s) => (
+          <MetricCard key={s.key} label={s.label} value={dayStats.counts[s.key] || 0} color={s.color} />
+        ))}
+      </div>
+
+      <input
+        type="text"
+        placeholder="Rechercher un employé"
+        value={filter}
+        onChange={(e) => setFilter(e.target.value)}
+        style={{ width: "100%", marginBottom: 12 }}
+      />
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {employees.map((emp) => (
+          <EmployeeRow
+            key={emp.id}
+            employee={emp}
+            entry={dayData[emp.id]}
+            onChange={(patch) => onSetEntry(selectedDate, emp.id, patch)}
+          />
+        ))}
+        {employees.length === 0 && (
+          <p style={{ color: "#888780", fontSize: 14, textAlign: "center", padding: "2rem 0" }}>Aucun employé trouvé.</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function MetricCard({ label, value, color }) {
+  const c = color ? COLOR_HEX[color] : null;
+  return (
+    <div style={{ background: "#F1EFE8", borderRadius: 8, padding: "10px 12px" }}>
+      <p style={{ fontSize: 12, color: "#5F5E5A", margin: 0 }}>{label}</p>
+      <p style={{ fontSize: 20, fontWeight: 500, margin: "2px 0 0", color: c ? c.text : "#2C2C2A" }}>{value}</p>
+    </div>
+  );
+}
+
+function EmployeeRow({ employee, entry, onChange }) {
+  const status = entry?.status || null;
+  const [showExtra, setShowExtra] = useState(false);
+
+  return (
+    <div style={{ background: "#fff", border: "0.5px solid #D3D1C7", borderRadius: 10, padding: "10px 12px" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+        <div style={{ minWidth: 160, display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 14, fontWeight: 500 }}>{employee.name}</span>
+          {status && <StatusBadge statusKey={status} small />}
+        </div>
+        <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+          {STATUSES.map((s) => {
+            const active = status === s.key;
+            const c = COLOR_HEX[s.color];
+            return (
+              <button
+                key={s.key}
+                onClick={() => onChange(active ? null : { status: s.key })}
+                title={s.label}
+                style={{
+                  fontSize: 12,
+                  padding: "5px 8px",
+                  borderRadius: 6,
+                  border: active ? `1px solid ${c.border}` : "0.5px solid #D3D1C7",
+                  background: active ? c.bg : "transparent",
+                  color: active ? c.text : "#5F5E5A",
+                  fontWeight: active ? 500 : 400,
+                  cursor: "pointer",
+                }}
+              >
+                {s.short}
+              </button>
+            );
+          })}
+          {status === "PRESENT" && (
+            <button onClick={() => setShowExtra((v) => !v)} style={{ fontSize: 12, padding: "5px 8px", borderRadius: 6 }}>
+              <i className="ti ti-clock" aria-hidden="true" style={{ fontSize: 14, verticalAlign: -2 }}></i>
+            </button>
+          )}
+        </div>
+      </div>
+      {status === "PRESENT" && showExtra && (
+        <div style={{ display: "flex", gap: 16, marginTop: 8, paddingTop: 8, borderTop: "0.5px solid #EDEBE3" }}>
+          <label style={{ fontSize: 12, color: "#5F5E5A", display: "flex", alignItems: "center", gap: 6 }}>
+            Heure d'arrivée
+            <input
+              type="time"
+              value={entry?.arrival || ""}
+              onChange={(e) => onChange({ arrival: e.target.value })}
+              style={{ width: 110, height: 30 }}
+            />
+          </label>
+          <label style={{ fontSize: 12, color: "#5F5E5A", display: "flex", alignItems: "center", gap: 6 }}>
+            Heures supp.
+            <input
+              type="time"
+              value={entry?.overtime || ""}
+              onChange={(e) => onChange({ overtime: e.target.value })}
+              style={{ width: 110, height: 30 }}
+            />
+          </label>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EmployesTab({ employees, persistEmployees, newEmployeeName, setNewEmployeeName, settings }) {
+  const addEmployee = () => {
+    const name = newEmployeeName.trim();
+    if (!name) return;
+    const id = "e" + Date.now();
+    persistEmployees([...employees, { id, name, active: true, salaire: null, heuresMensuelles: null }]);
+    setNewEmployeeName("");
+  };
+
+  const toggleActive = (id) => {
+    persistEmployees(employees.map((e) => (e.id === id ? { ...e, active: e.active === false ? true : false } : e)));
+  };
+
+  const removeEmployee = (id) => {
+    persistEmployees(employees.filter((e) => e.id !== id));
+  };
+
+  const updateField = (id, field, rawValue) => {
+    const value = rawValue === "" ? null : Number(rawValue);
+    if (rawValue !== "" && (Number.isNaN(value) || value < 0)) return;
+    persistEmployees(employees.map((e) => (e.id === id ? { ...e, [field]: value } : e)));
+  };
+
+  return (
+    <div>
+      <p style={{ fontSize: 13, color: "#5F5E5A", margin: "0 0 14px" }}>
+        Renseigne le salaire mensuel de chaque employé pour calculer automatiquement son taux horaire et le montant des heures supplémentaires à payer. Laisse "Heures/mois" vide pour utiliser la valeur par défaut définie dans Paramètres ({settings.heuresMensuelles} h).
+      </p>
+      <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+        <input
+          type="text"
+          placeholder="Nom du nouvel employé"
+          value={newEmployeeName}
+          onChange={(e) => setNewEmployeeName(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && addEmployee()}
+          style={{ flex: 1 }}
+        />
+        <button onClick={addEmployee}>
+          <i className="ti ti-plus" aria-hidden="true" style={{ marginRight: 4 }}></i>Ajouter
+        </button>
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {employees.map((emp) => {
+          const rate = hourlyRateOf(emp, settings);
+          return (
+            <div key={emp.id} style={{
+              display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10,
+              background: "#fff", border: "0.5px solid #D3D1C7", borderRadius: 10, padding: "10px 12px",
+              opacity: emp.active === false ? 0.5 : 1,
+            }}>
+              <span style={{ fontSize: 14, fontWeight: 500, minWidth: 150 }}>{emp.name}</span>
+              <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+                <label style={{ fontSize: 12, color: "#5F5E5A", display: "flex", alignItems: "center", gap: 6 }}>
+                  Salaire mensuel
+                  <input
+                    type="number"
+                    min="0"
+                    placeholder="ex. 60000"
+                    value={emp.salaire ?? ""}
+                    onChange={(e) => updateField(emp.id, "salaire", e.target.value)}
+                    style={{ width: 110, height: 30 }}
+                  />
+                </label>
+                <label style={{ fontSize: 12, color: "#5F5E5A", display: "flex", alignItems: "center", gap: 6 }}>
+                  Heures/mois
+                  <input
+                    type="number"
+                    min="0"
+                    placeholder={String(settings.heuresMensuelles)}
+                    value={emp.heuresMensuelles ?? ""}
+                    onChange={(e) => updateField(emp.id, "heuresMensuelles", e.target.value)}
+                    style={{ width: 90, height: 30 }}
+                  />
+                </label>
+                <span style={{ fontSize: 12, color: "#5F5E5A", minWidth: 130 }}>
+                  Taux horaire: <strong style={{ color: "#2C2C2A" }}>{rate ? formatCurrency(rate, settings.devise) : "—"}</strong>
+                </span>
+                <button onClick={() => toggleActive(emp.id)} style={{ fontSize: 12, padding: "5px 10px" }}>
+                  {emp.active === false ? "Réactiver" : "Désactiver"}
+                </button>
+                <button onClick={() => removeEmployee(emp.id)} aria-label={"Supprimer " + emp.name} style={{ fontSize: 12, padding: "5px 8px" }}>
+                  <i className="ti ti-trash" aria-hidden="true"></i>
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function ParametresTab({ settings, persistSettings }) {
+  const update = (field, rawValue) => {
+    const value = Number(rawValue);
+    if (rawValue === "" || Number.isNaN(value) || value < 0) return;
+    persistSettings({ [field]: value });
+  };
+
+  return (
+    <div style={{ maxWidth: 520 }}>
+      <p style={{ fontSize: 13, color: "#5F5E5A", margin: "0 0 16px" }}>
+        Ces valeurs par défaut servent au calcul du taux horaire et du montant des heures supplémentaires pour tous les employés qui n'ont pas de valeur personnalisée.
+      </p>
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        <SettingField
+          label="Heures de travail journalier"
+          suffix="h/jour"
+          value={settings.heuresJournalieres}
+          onChange={(v) => update("heuresJournalieres", v)}
+        />
+        <SettingField
+          label="Heures de travail mensuel"
+          suffix="h/mois"
+          value={settings.heuresMensuelles}
+          step="0.01"
+          onChange={(v) => update("heuresMensuelles", v)}
+        />
+        <SettingField
+          label="Majoration des heures supplémentaires"
+          suffix="×"
+          value={settings.majorationSupp}
+          step="0.1"
+          onChange={(v) => update("majorationSupp", v)}
+        />
+        <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "#fff", border: "0.5px solid #D3D1C7", borderRadius: 10, padding: "10px 12px" }}>
+          <span style={{ fontSize: 14 }}>Devise</span>
+          <input
+            type="text"
+            value={settings.devise}
+            onChange={(e) => persistSettings({ devise: e.target.value })}
+            style={{ width: 90, height: 30, textAlign: "right" }}
+          />
+        </label>
+      </div>
+      <div style={{ marginTop: 20, background: "#F1EFE8", borderRadius: 10, padding: "12px 14px", fontSize: 13, color: "#5F5E5A" }}>
+        <p style={{ margin: "0 0 4px", fontWeight: 500, color: "#2C2C2A" }}>Comment ça se calcule</p>
+        <p style={{ margin: 0 }}>Taux horaire = salaire mensuel ÷ heures de travail mensuel.</p>
+        <p style={{ margin: "4px 0 0" }}>Montant heures supp. = heures supp. cumulées × taux horaire × majoration.</p>
+      </div>
+    </div>
+  );
+}
+
+function SettingField({ label, value, onChange, suffix, step }) {
+  return (
+    <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "#fff", border: "0.5px solid #D3D1C7", borderRadius: 10, padding: "10px 12px" }}>
+      <span style={{ fontSize: 14 }}>{label}</span>
+      <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <input
+          type="number"
+          min="0"
+          step={step || "1"}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          style={{ width: 90, height: 30, textAlign: "right" }}
+        />
+        <span style={{ fontSize: 12, color: "#5F5E5A", minWidth: 44 }}>{suffix}</span>
+      </span>
+    </label>
+  );
+}
+
+function DashboardTab({ employees, monthCache, loadMonth, currentMonthKey, settings }) {
+  const [monthKey, setMonthKey] = useState(currentMonthKey);
+  const [sortBy, setSortBy] = useState("ABSENCE");
+
+  useEffect(() => {
+    loadMonth(monthKey);
+  }, [monthKey]);
+
+  const monthData = monthCache[monthKey] || {};
+  const nDays = daysInMonth(monthKey);
+
+  const rows = useMemo(() => {
+    return employees.map((emp) => {
+      const counts = Object.fromEntries(STATUSES.map((s) => [s.key, 0]));
+      let overtimeHours = 0;
+      Object.keys(monthData).forEach((date) => {
+        const entry = monthData[date]?.[emp.id];
+        if (entry && entry.status) {
+          counts[entry.status] = (counts[entry.status] || 0) + 1;
+          if (entry.status === "PRESENT" && entry.overtime) overtimeHours += timeStrToHours(entry.overtime);
+        }
+      });
+      const rate = hourlyRateOf(emp, settings);
+      const overtimePay = rate !== null ? overtimeHours * rate * settings.majorationSupp : null;
+      return { emp, counts, overtimeHours, rate, overtimePay };
+    });
+  }, [employees, monthData, settings]);
+
+  const sortedRows = useMemo(() => {
+    if (sortBy === "PAY") return [...rows].sort((a, b) => (b.overtimePay || 0) - (a.overtimePay || 0));
+    return [...rows].sort((a, b) => (b.counts[sortBy] || 0) - (a.counts[sortBy] || 0));
+  }, [rows, sortBy]);
+
+  const totals = useMemo(() => {
+    const t = Object.fromEntries(STATUSES.map((s) => [s.key, 0]));
+    rows.forEach((r) => STATUSES.forEach((s) => { t[s.key] += r.counts[s.key] || 0; }));
+    return t;
+  }, [rows]);
+
+  const totalOvertimePay = useMemo(() => rows.reduce((sum, r) => sum + (r.overtimePay || 0), 0), [rows]);
+
+  const daysWithData = Object.keys(monthData).length;
+  const totalMarks = STATUSES.reduce((sum, s) => sum + totals[s.key], 0);
+  const attendanceRate = totalMarks ? Math.round((totals.PRESENT / totalMarks) * 100) : 0;
+
+  const availableMonths = useMemo(() => {
+    const set = new Set(Object.keys(monthCache));
+    set.add(currentMonthKey);
+    return Array.from(set).sort().reverse();
+  }, [monthCache, currentMonthKey]);
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
+        <select value={monthKey} onChange={(e) => setMonthKey(e.target.value)} style={{ width: 200, textTransform: "capitalize" }}>
+          {availableMonths.map((mk) => (
+            <option key={mk} value={mk}>{monthLabel(mk)}</option>
+          ))}
+        </select>
+        <span style={{ fontSize: 13, color: "#5F5E5A" }}>{daysWithData} / {nDays} jours saisis</span>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12, marginBottom: 20 }}>
+        <MetricCard label="Employés actifs" value={employees.length} />
+        <MetricCard label="Taux de présence" value={attendanceRate + "%"} color="green" />
+        <MetricCard label="Total absences" value={totals.ABSENCE} color="red" />
+        <MetricCard label="Total congés" value={totals.CONGE} color="blue" />
+        <MetricCard label="Total maladies" value={totals.MALADIE} color="amber" />
+        <MetricCard label="Heures supp. à payer" value={formatCurrency(totalOvertimePay, settings.devise)} color="purple" />
+      </div>
+
+      <StatusBarChart totals={totals} />
+
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", margin: "20px 0 10px" }}>
+        <h3 style={{ fontSize: 16, fontWeight: 500, margin: 0 }}>Détail par employé</h3>
+        <label style={{ fontSize: 12, color: "#5F5E5A", display: "flex", alignItems: "center", gap: 6 }}>
+          Trier par
+          <select value={sortBy} onChange={(e) => setSortBy(e.target.value)} style={{ height: 30, fontSize: 12 }}>
+            {STATUSES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
+            <option value="PAY">Montant heures supp.</option>
+          </select>
+        </label>
+      </div>
+
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+          <thead>
+            <tr style={{ borderBottom: "0.5px solid #D3D1C7" }}>
+              <th style={{ textAlign: "left", padding: "6px 8px", color: "#5F5E5A", fontWeight: 500 }}>Employé</th>
+              {STATUSES.map((s) => (
+                <th key={s.key} style={{ textAlign: "center", padding: "6px 8px", color: "#5F5E5A", fontWeight: 500 }}>{s.short}</th>
+              ))}
+              <th style={{ textAlign: "center", padding: "6px 8px", color: "#5F5E5A", fontWeight: 500 }}>H. supp.</th>
+              <th style={{ textAlign: "right", padding: "6px 8px", color: "#5F5E5A", fontWeight: 500 }}>Montant à payer</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sortedRows.map(({ emp, counts, overtimeHours, overtimePay }) => (
+              <tr key={emp.id} style={{ borderBottom: "0.5px solid #EDEBE3" }}>
+                <td style={{ padding: "6px 8px", fontWeight: 500 }}>{emp.name}</td>
+                {STATUSES.map((s) => (
+                  <td key={s.key} style={{ textAlign: "center", padding: "6px 8px", color: counts[s.key] ? COLOR_HEX[s.color].text : "#B4B2A9" }}>
+                    {counts[s.key] || 0}
+                  </td>
+                ))}
+                <td style={{ textAlign: "center", padding: "6px 8px", color: "#5F5E5A" }}>{overtimeHours ? overtimeHours.toFixed(2) : 0}</td>
+                <td style={{ textAlign: "right", padding: "6px 8px", color: "#5F5E5A", fontWeight: 500 }}>{formatCurrency(overtimePay, settings.devise)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function StatusBarChart({ totals }) {
+  const max = Math.max(1, ...STATUSES.map((s) => totals[s.key]));
+  return (
+    <div style={{ background: "#fff", border: "0.5px solid #D3D1C7", borderRadius: 10, padding: "14px 16px" }}>
+      <p style={{ fontSize: 13, color: "#5F5E5A", margin: "0 0 12px" }}>Répartition des statuts (mois sélectionné)</p>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {STATUSES.map((s) => {
+          const val = totals[s.key];
+          const c = COLOR_HEX[s.color];
+          const pct = Math.round((val / max) * 100);
+          return (
+            <div key={s.key} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ width: 90, fontSize: 12, color: "#5F5E5A" }}>{s.label}</span>
+              <div style={{ flex: 1, background: "#F1EFE8", borderRadius: 4, height: 14, position: "relative" }}>
+                <div style={{ width: pct + "%", background: c.border, height: "100%", borderRadius: 4 }}></div>
+              </div>
+              <span style={{ width: 32, fontSize: 12, textAlign: "right", fontWeight: 500 }}>{val}</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<App />);
+</script>
+</body>
+</html>
